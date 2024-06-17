@@ -158,7 +158,7 @@ def main():
             print("No patterns found")
             sys.exit()
     if args.listmodels:
-        gptmodels, localmodels, claudemodels, googlemodels = standalone.fetch_available_models()
+        gptmodels, localmodels, claudemodels, googlemodels, mistralmodels = standalone.fetch_available_models()
         print("GPT Models:")
         for model in gptmodels:
             print(model)
@@ -171,6 +171,10 @@ def main():
         print("\nGoogle Models:")
         for model in googlemodels:
             print(model)
+        print("\nMistral Models:")
+        for model in mistralmodels:
+            print(model)
+
         sys.exit()
     if args.text is not None:
         text = args.text

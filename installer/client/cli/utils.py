@@ -1,6 +1,7 @@
 import requests
 import os
 from openai import OpenAI, APIConnectionError
+from mistralai.client import MistralClient
 import asyncio
 import pyperclip
 import sys
@@ -53,13 +54,14 @@ class Standalone:
             if not self.model:
                 self.model = 'gpt-4-turbo-preview'
         self.claude = False
-        sorted_gpt_models, ollamaList, claudeList, googleList = self.fetch_available_models()
+        sorted_gpt_models, ollamaList, claudeList, googleList, mistralList = self.fetch_available_models()
         self.sorted_gpt_models = sorted_gpt_models
         self.ollamaList = ollamaList
         self.claudeList = claudeList
         self.googleList = googleList
         self.local = self.model in ollamaList
         self.claude = self.model in claudeList
+        self.mistral = self.model in mistralList
         self.google = self.model in googleList
 
     async def localChat(self, messages, host=''):
@@ -165,6 +167,28 @@ class Standalone:
             session.save_to_session(
                 system, user, response.text, self.args.session)
 
+    async def mistralChat(self, system, user, copy=False):
+        self.mistralApiKey = os.environ["MISTRAL_API_KEY"]
+
+        client = MistralClient(api_key=self.mistralApiKey)
+        chat_response = client.chat(
+            model=self.model,
+            messages=[system, user]
+        )
+        string_response = chat_response.choices[0].message.content;
+        print(string_response)
+
+        copy = self.args.copy
+        if copy:
+            pyperclip.copy(string_response)
+        if self.args.output:
+            with open(self.args.output, "w") as f:
+                f.write(string_response)
+        if self.args.session:
+            from .helper import Session
+            session = Session()
+            session.save_to_session(
+                system, user, string_response, self.args.session)
     async def googleStream(self, system, user, copy=False):
         import google.generativeai as genai
         buffer = ""
@@ -176,6 +200,31 @@ class Standalone:
         for chunk in response:
             buffer += chunk.text
             print(chunk.text)
+        if copy:
+            pyperclip.copy(buffer)
+        if self.args.output:
+            with open(self.args.output, "w") as f:
+                f.write(buffer)
+        if self.args.session:
+            from .helper import Session
+            session = Session()
+            session.save_to_session(
+                system, user, buffer, self.args.session)
+
+    async def mistralStream(self, system, user, copy=False):
+        buffer = ""
+        self.mistralApiKey = os.environ["MISTRAL_API_KEY"]
+        mistral_client = MistralClient(api_key=self.mistralApiKey)
+
+        for chunk in mistral_client.chat_stream(
+                model=self.model,
+                messages=[system, user]
+        ):
+            test_output = chunk.choices[0].delta.content
+            if test_output is not None:
+                buffer += test_output
+                print(test_output, end="")
+
         if copy:
             pyperclip.copy(buffer)
         if self.args.output:
@@ -256,6 +305,8 @@ class Standalone:
                 if system == "":
                     system = " "
                 asyncio.run(self.googleStream(system, user_message['content']))
+            elif self.mistral:
+                asyncio.run(self.mistralStream({"role": "system", "content": system}, user_message))
             else:
                 stream = self.client.chat.completions.create(
                     model=self.model,
@@ -366,6 +417,8 @@ class Standalone:
                 if system == "":
                     system = " "
                 asyncio.run(self.googleChat(system, user_message['content']))
+            elif self.mistral:
+                asyncio.run(self.mistralChat({'role': 'system', 'content': system}, user_message))
             else:
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -406,6 +459,7 @@ class Standalone:
         gptlist = []
         fullOllamaList = []
         googleList = []
+        mistral_list = []
         if "CLAUDE_API_KEY" in os.environ:
             claudeList = ['claude-3-opus-20240229', 'claude-3-sonnet-20240229',
                           'claude-3-haiku-20240307', 'claude-2.1']
@@ -450,7 +504,15 @@ class Standalone:
         except:
             googleList = []
 
-        return gptlist, fullOllamaList, claudeList, googleList
+        try:
+            mistral_client = MistralClient(api_key=os.environ["MISTRAL_API_KEY"])
+            mistral_models = mistral_client.list_models()
+            for m in mistral_models.data:
+                mistral_list.append(m.id)
+        except:
+            mistral_list = []
+
+        return gptlist, fullOllamaList, claudeList, googleList, mistral_list
 
     def get_cli_input(self):
         """ aided by ChatGPT; uses platform library
@@ -673,6 +735,31 @@ class Setup:
             with open(self.env_file, "w") as f:
                 f.write(f"CLAUDE_API_KEY={claude_key}\n")
 
+    def mistral_key(self, mistral_key):
+        """        Set the Mistral API key in the environment file.
+
+        Args:
+            mistral_key (str): The API key to be set.
+
+        Returns:
+            None
+
+        Raises:
+            OSError: If the environment file does not exist or cannot be accessed.
+        """
+        mistral_key = mistral_key.strip()
+        if os.path.exists(self.env_file) and mistral_key:
+            with open(self.env_file, "r") as f:
+                lines = f.readlines()
+            with open(self.env_file, "w") as f:
+                for line in lines:
+                    if "MISTRAL_API_KEY" not in line:
+                        f.write(line)
+                f.write(f"MISTRAL_API_KEY={mistral_key}\n")
+        elif mistral_key:
+            with open(self.env_file, "w") as f:
+                f.write(f"MISTRAL_API_KEY={mistral_key}\n")
+
     def google_key(self, google_key):
         """        Set the Google API key in the environment file.
 
@@ -732,8 +819,8 @@ class Setup:
         model = model.strip()
         env = os.path.expanduser("~/.config/fabric/.env")
         standalone = Standalone(args=[], pattern="")
-        gpt, ollama, claude, google = standalone.fetch_available_models()
-        allmodels = gpt + ollama + claude + google
+        gpt, ollama, claude, google, mistral = standalone.fetch_available_models()
+        allmodels = gpt + ollama + claude + google + mistral
         if model not in allmodels:
             print(
                 f"Error: {model} is not a valid model. Please run fabric --listmodels to see the available models.")
@@ -790,6 +877,9 @@ class Setup:
         apikey = input(
             "Please enter your OpenAI API key. If you do not have one or if you have already entered it, press enter.\n")
         self.api_key(apikey)
+        print("Please enter your mistral API key. If you do not have one, or if you have already entered it, press enter.\n")
+        mistralkey = input()
+        self.mistral_key(mistralkey)
         print("Please enter your claude API key. If you do not have one, or if you have already entered it, press enter.\n")
         claudekey = input()
         self.claude_key(claudekey)
